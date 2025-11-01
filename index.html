@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>macOS 风格飘浮对话框 · 多文本 + 连续生成 + 随机颜色 + 可隐藏 UI + 全屏 + 可关闭/最小化/缩放</title>
+  <style>
+    :root{
+      --bg: #0b0c0f;
+      --titlebar-fallback: #f5f6f7;
+      --border: rgba(0,0,0,.15);
+      --shadow: 0 14px 32px rgba(0,0,0,.38), 0 6px 14px rgba(0,0,0,.25);
+      --radius: 12px;
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+              "Microsoft YaHei", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --text: #111;
+      --muted:#6b7280;
+      --overlay: .85;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; background: var(--bg);
+      font-family: var(--font); color: #fff;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* 顶部控制条（可隐藏） */
+    header#ui{
+      position: fixed; left: 16px; top: 16px; z-index: 9;
+      display: flex; gap: 10px; align-items: center; padding: 12px;
+      background: rgba(255,255,255,.1);
+      border: 1px solid rgba(255,255,255,.15);
+      border-radius: 12px;
+      backdrop-filter: blur(8px) saturate(1.2);
+      box-shadow: 0 10px 22px rgba(0,0,0,.28);
+      max-width: min(92vw, 1080px);
+    }
+    #ui .group{display:flex; flex-direction:column; gap:6px}
+    #ui .row{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+    #ui label{font-size:12px; color:#e5e7eb}
+    #ui textarea, #ui input[type="number"], #ui input[type="range"]{
+      background: rgba(0,0,0,.28); border: 1px solid rgba(255,255,255,.18);
+      color:#fff; border-radius: 10px; padding:8px 10px; outline:none; font-size: 13px;
+    }
+    #ui textarea{width: 420px; height: 76px; resize: both}
+    #ui input[type="number"]{ width: 84px }
+    #ui input[type="range"]{ width: 130px }
+    #ui button{
+      border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.10);
+      color:#fff; border-radius: 10px; padding:8px 10px; font-size:13px; cursor:pointer;
+    }
+    #ui button:hover{ background: rgba(255,255,255,.18); }
+    #ui .muted{font-size:12px;color:#cbd5e1}
+
+    /* 漂浮层：允许交互（关闭/最小化/缩放） */
+    #layer{
+      position: fixed; inset: 0; z-index: 1; pointer-events: auto;
+      opacity: var(--overlay);
+    }
+
+    /* macOS 窗口外观（颜色由 JS 随机设置） */
+    .macwin{
+      position: absolute; display: inline-block;
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      color: var(--text);
+      transform: translate3d(0,0,0);
+      will-change: transform;
+      user-select: none;
+      pointer-events: auto;
+      transition: opacity .25s ease;
+    }
+    .titlebar{
+      height: 32px; background: var(--titlebar-fallback);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; padding: 0 10px;
+      gap: 8px;
+    }
+    .traffic{
+      display: inline-flex; gap: 8px; align-items: center;
+    }
+    .traffic .dot{
+      width: 12px; height: 12px; border-radius: 50%;
+      border: 1px solid rgba(0,0,0,.12);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.6);
+      transition: transform .12s ease;
+    }
+    .traffic .dot:hover{ transform: scale(1.12); }
+    .traffic .dot:active{ transform: scale(0.94); }
+    .traffic .close { background: #ff5f57; cursor: pointer; }
+    .traffic .min   { background: #febc2e; cursor: pointer; }
+    .traffic .zoom  { background: #28c840; cursor: pointer; }
+
+    .title{
+      font-size: 12px; color: var(--muted);
+      letter-spacing: .2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    .content{ padding: 14px 16px; }
+    .content .line{
+      white-space: nowrap;  /* 横向单行，不换行 */
+      font-weight: 700; font-size: 18px; letter-spacing: .2px;
+      line-height: 1.25;
+      color: #111;
+    }
+
+    /* 角标 */
+    .badge{
+      position: absolute; right: 10px; top: 6px;
+      font-size: 11px; color:#374151; background: rgba(0,0,0,.06);
+      border: 1px solid rgba(0,0,0,.08); padding: 2px 6px; border-radius: 999px;
+    }
+  </style>
+</head>
+<body>
+  <header id="ui">
+    <div class="group">
+      <div class="row">
+        <label for="texts">多文本（每行一条；也支持 URL ?texts= 用 “|” 或逗号分隔）</label>
+      </div>
+      <textarea id="texts">今天有没有好好吃饭
+喝水了吗？
+坐久了记得活动一下～
+注意休息，保护眼睛
+按时吃饭，规律作息
+今天也要元气满满！
+吃饭要好好咀嚼～
+补充蛋白质和蔬菜！</textarea>
+      <div class="row">
+        <label>数量</label><input id="count" type="number" value="48" min="5" max="200" />
+        <label>速度</label><input id="speed" type="number" value="1.0" step="0.1" min="0.2" max="5" />
+        <label>透明度</label><input id="opacity" type="range" min="0.3" max="1.0" value="0.85" step="0.05" />
+        <button id="apply">▶︎ 重载文本</button>
+        <button id="toggle">隐藏 UI (U)</button>
+        <button id="fullscreen">全屏 (F)</button>
+        <span class="muted">提示：U 隐藏/显示 UI；F 进入/退出全屏；Esc 退出全屏；红=关闭，黄=最小化，绿=缩放</span>
+      </div>
+    </div>
+  </header>
+
+  <div id="layer" aria-hidden="false"></div>
+
+  <script>
+    const $ui = document.getElementById('ui');
+    const $layer = document.getElementById('layer');
+    const $texts = document.getElementById('texts');
+    const $count = document.getElementById('count');
+    const $speed = document.getElementById('speed');
+    const $opacity = document.getElementById('opacity');
+    const $apply = document.getElementById('apply');
+    const $toggle = document.getElementById('toggle');
+    const $fullscreen = document.getElementById('fullscreen');
+
+    /* URL 参数初始化 */
+    const url = new URL(location.href);
+    const qs = (k, d) => url.searchParams.get(k) ?? d;
+    const rawTextsQS = qs('texts','');
+    if (rawTextsQS) {
+      const decoded = decodeURIComponent(rawTextsQS).replace(/[|,]/g, '\n');
+      $texts.value = decoded;
+    }
+    $count.value = Number(qs('count', $count.value));
+    $speed.value = Number(qs('speed', $speed.value));
+    $opacity.value = Number(qs('opacity', $opacity.value));
+    $layer.style.opacity = $opacity.value;
+    const uiInit = qs('ui', '1');
+    if (uiInit === '0') $ui.style.display = 'none';
+
+    /* 工具 */
+    const pad = n => String(n).padStart(2,'0');
+    const nowStr = () => {
+      const d = new Date();
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
+    const rand = (a,b) => a + Math.random()*(b-a);
+
+    function parseTexts(raw){
+      return raw.split(/\r?\n|[|,]/).map(s=>s.trim()).filter(Boolean);
+    }
+
+    /* 文本池（可动态重载） */
+    let pool = parseTexts($texts.value);
+    if (!pool.length) pool = ['今天有没有好好吃饭'];
+
+/* ====== 管理集合：支持按窗口 ID 精确控制 ====== */
+    const windows = [];
+    let nextId = 1;
+    function removeById(id){
+      const idx = windows.findIndex(w => w.id === id);
+      if (idx >= 0){
+        windows[idx].el.remove();
+        windows.splice(idx, 1);
+      }
+    }
+
+    /* Pastel 配色：随机轻色 */
+    function pastelHSL() {
+      const h = Math.floor(Math.random()*360);
+      const s = Math.floor(60 + Math.random()*15);  // 60~75
+      const l = Math.floor(85 + Math.random()*8);   // 85~93
+      return {h, s, l};
+    }
+
+    function makeWindow(){
+      const id = nextId++;
+      const w = document.createElement('article');
+      w.className = 'macwin';
+      w.dataset.id = String(id);
+      w.style.width  = Math.round(rand(280, 420)) + 'px';
+      w.style.height = 'auto';
+      w.style.left = Math.round(rand(10, Math.max(20, window.innerWidth - parseFloat(w.style.width) - 10))) + 'px';
+      w.style.top  = (window.innerHeight + rand(10, 200)) + 'px';
+
+      // 随机色主题（窗口体 & 标题栏 & 边框）
+      const c = pastelHSL();
+      const bg = `hsl(${c.h} ${c.s}% ${c.l}%)`;
+      const bar = `hsl(${c.h} ${Math.max(40, c.s-10)}% ${Math.min(98, c.l+4)}%)`;
+      const border = `hsl(${c.h} ${Math.max(30, c.s-25)}% ${Math.max(70, c.l-12)}%)`;
+      w.style.background = bg;
+      w.style.borderColor = border;
+
+      const titlebar = document.createElement('div'); titlebar.className='titlebar';
+      titlebar.style.background = bar;
+      titlebar.style.borderBottomColor = border;
+
+      const traffic  = document.createElement('div'); traffic.className='traffic';
+      const closeBtn = document.createElement('span'); closeBtn.className = 'dot close'; closeBtn.title='关闭';
+      const minBtn   = document.createElement('span'); minBtn.className   = 'dot min';   minBtn.title='最小化';
+      const zoomBtn  = document.createElement('span'); zoomBtn.className  = 'dot zoom';  zoomBtn.title='缩放';
+      traffic.append(closeBtn, minBtn, zoomBtn);
+      const title = document.createElement('div'); title.className='title'; title.textContent = 'Message';
+      titlebar.append(traffic, title);
+
+      const content = document.createElement('div'); content.className='content';
+      const line = document.createElement('div'); line.className='line';
+      line.textContent = pool[Math.floor(Math.random()*pool.length)];
+      content.append(line);
+
+      const badge = document.createElement('div'); badge.className='badge'; badge.textContent = nowStr();
+
+      w.append(titlebar, content, badge);
+      $layer.appendChild(w);
+
+      const width = w.offsetWidth;
+      const height = w.offsetHeight;
+
+      const vx = Math.random() < 0.5 ? -rand(0.2, 0.6) : rand(0.2, 0.6);
+      const vy = - (1.0 * Number($speed.value) * rand(0.8, 1.4));
+      const amp = rand(10, 26);
+      const freq = rand(0.004, 0.010);
+
+      const obj = {
+        id,
+        el: w,
+        x: parseFloat(w.style.left),
+        y: parseFloat(w.style.top),
+        w: width, h: height,
+        vx, vy, amp, freq, t: Math.random()*1000,
+        scale: 1.0,
+        zoomed: false,
+        minimizing: false,
+        opacity: 1.0
+      };
+      windows.push(obj);
+
+      // ===== 绑定交互：红=关闭，黄=最小化（缓慢下沉并淡出后移除），绿=缩放（切换 1.0/1.15） =====
+      closeBtn.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        removeById(id);
+      }, {passive:true});
+
+      minBtn.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        const w = windows.find(w=>w.id===id);
+        if (!w || w.minimizing) return;
+        // 设置“最小化”状态：向下漂移，逐渐透明
+        w.minimizing = true;
+        w.vx = 0;
+        w.amp = 0;
+        // 让它下沉速度稍快于上浮
+        w.vy = Math.abs(w.vy) + 0.6;
+      }, {passive:true});
+
+      zoomBtn.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        const w = windows.find(w=>w.id===id);
+        if (!w) return;
+        w.zoomed = !w.zoomed;
+        w.scale = w.zoomed ? 1.15 : 1.0;
+        // 置顶以免被其他窗口遮挡
+        w.el.style.zIndex = w.zoomed ? 2 : 1;
+      }, {passive:true});
+    }
+
+    /* 连续生成：rAF 时间累积器 */
+    let last = performance.now();
+    let spawnAcc = 0;
+    function computeInterval(){
+      const target = Math.max(5, Math.min(200, Number($count.value)));
+      const base = 20000 / target; // 约 20 秒填满
+      return Math.max(60, Math.min(600, base));
+    }
+
+    function loop(now){
+      const dt = now - last; last = now;
+      spawnAcc += dt;
+
+      const target = Math.max(5, Math.min(200, Number($count.value)));
+      const interval = computeInterval();
+
+      while (spawnAcc >= interval && windows.length < target){
+        makeWindow();
+        spawnAcc -= interval;
+      }
+      if (windows.length >= target){
+        spawnAcc = Math.min(spawnAcc, interval);
+      }
+
+      for(let i = windows.length - 1; i >= 0; i--){
+        const win = windows[i];
+        win.t += 1;
+        const drift = Math.sin(win.t * win.freq) * win.amp * 0.08;
+        win.x += win.vx + drift * 0.02;
+        win.y += win.vy;
+
+        // 最小化中的淡出和下沉阈值
+        if (win.minimizing){
+          win.opacity = Math.max(0, win.opacity - 0.02);
+          win.el.style.opacity = win.opacity;
+          // 额外下沉
+          win.y += 1.2;
+          if (win.y - win.h/2 > window.innerHeight + 120 || win.opacity <= 0){
+            win.el.remove();
+            windows.splice(i, 1);
+            continue;
+          }
+        }
+
+        // 组合 transform：位移 + 缩放
+        const baseLeft = parseFloat(win.el.style.left);
+        const baseTop  = parseFloat(win.el.style.top);
+        const tx = win.x - baseLeft;
+        const ty = win.y - baseTop;
+        win.el.style.transform = `translate(${tx}px, ${ty}px) scale(${win.scale})`;
+
+        // 上边界回收（正常上浮消失）
+        if(!win.minimizing && (win.y + win.h < -80)){
+          win.el.remove();
+          windows.splice(i, 1);
+        }
+      }
+
+      requestAnimationFrame(loop);
+    }
+
+    /* 交互 */
+    $opacity.addEventListener('input', ()=> { $layer.style.opacity = $opacity.value; });
+    $apply.addEventListener('click', ()=> {
+      const list = parseTexts($texts.value);
+      if (list.length) pool = list;
+    });
+    $toggle.addEventListener('click', ()=> {
+      $ui.style.display = ($ui.style.display === 'none') ? 'flex' : 'none';
+    });
+    $fullscreen.addEventListener('click', async ()=>{
+      try{
+        if(!document.fullscreenElement){
+          await document.documentElement.requestFullscreen();
+        }else{
+          await document.exitFullscreen();
+        }
+      }catch(e){
+        alert('浏览器限制：无法自动进入全屏，可手动使用 Ctrl + Cmd + F。');
+      }
+    });
+    document.addEventListener('keydown', (e)=>{
+      if(e.key === 'u' || e.key === 'U'){ $toggle.click(); }
+      if(e.key === 'f' || e.key === 'F'){ $fullscreen.click(); }
+    });
+    $count.addEventListener('change', ()=> { /* interval 会自动随目标数变化 */ });
+    $speed.addEventListener('change', ()=> { /* 新窗口用新速度；老窗口保持原速 */ });
+
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
